@@ -5,112 +5,111 @@ open Elmish.React
 open Fable.React
 open Fable.React.Props
 open Fulma
-open Thoth.Json
+open Fable.Core.JsInterop
 
 open Shared
 
-// The model holds data that you want to keep track of while the application is running
-// in this case, we are keeping track of a counter
-// we mark it as optional, because initially it will not be available from the client
-// the initial value will be requested from server
-type Model = { Counter: Counter option }
+open Microsoft.FSharp.Reflection
 
-// The Msg type defines what events/actions can occur while the application is running
-// the state of the application changes *only* in reaction to these events
+type Model = {
+    Input: float option
+    Source: Length
+    Target: Length
+    Result: float
+    Error: exn option }
+
 type Msg =
-    | Increment
-    | Decrement
-    | InitialCountLoaded of Counter
+    | UpdateInput of string
+    | UpdateSource of Length
+    | UpdateTarget of Length
+    | Convert of Conversion
+    | ConversionOk of float
+    | ConversionErr of exn
 
 module Server =
 
     open Shared
     open Fable.Remoting.Client
 
-    /// A proxy you can use to talk to server directly
-    let api : ICounterApi =
+    let api : IConverterApi =
       Remoting.createApi()
       |> Remoting.withRouteBuilder Route.builder
-      |> Remoting.buildProxy<ICounterApi>
-let initialCounter = Server.api.initialCounter
+      |> Remoting.buildProxy<IConverterApi>
 
-// defines the initial state and initial command (= side-effect) of the application
 let init () : Model * Cmd<Msg> =
-    let initialModel = { Counter = None }
-    let loadCountCmd =
-        Cmd.OfAsync.perform initialCounter () InitialCountLoaded
-    initialModel, loadCountCmd
+    let initialModel = {
+        Input = None
+        Source = Meter
+        Target = Meter
+        Result = 0.0
+        Error = None }
+    initialModel, Cmd.none
 
-// The update function computes the next state of the application based on the current state and the incoming events/messages
-// It can also run side-effects (encoded as commands) like calling the server via Http.
-// these commands in turn, can dispatch messages to which the update function will react.
-let update (msg : Msg) (currentModel : Model) : Model * Cmd<Msg> =
-    match currentModel.Counter, msg with
-    | Some counter, Increment ->
-        let nextModel = { currentModel with Counter = Some { Value = counter.Value + 1 } }
-        nextModel, Cmd.none
-    | Some counter, Decrement ->
-        let nextModel = { currentModel with Counter = Some { Value = counter.Value - 1 } }
-        nextModel, Cmd.none
-    | _, InitialCountLoaded initialCount->
-        let nextModel = { Counter = Some initialCount }
-        nextModel, Cmd.none
-    | _ -> currentModel, Cmd.none
+let update (msg : Msg) (model : Model) : Model * Cmd<Msg> =
+    match msg with
+    | UpdateInput i ->
+        let success, f = System.Double.TryParse i
+        let input = if success then Some f else None
+        { model with Input = input }, Cmd.none
+    | UpdateSource s -> { model with Source = s }, Cmd.none
+    | UpdateTarget t -> { model with Target = t }, Cmd.none
+    | Convert c ->
+        model, Cmd.OfAsync.either Server.api.convert c ConversionOk ConversionErr
+    | ConversionOk r -> { model with Result = r }, Cmd.none
+    | ConversionErr e -> { model with Error = Some e }, Cmd.none
 
-
-let safeComponents =
-    let components =
-        span [ ]
-           [ a [ Href "https://github.com/SAFE-Stack/SAFE-template" ]
-               [ str "SAFE  "
-                 str Version.template ]
-             str ", "
-             a [ Href "https://github.com/giraffe-fsharp/Giraffe" ] [ str "Giraffe" ]
-             str ", "
-             a [ Href "http://fable.io" ] [ str "Fable" ]
-             str ", "
-             a [ Href "https://elmish.github.io" ] [ str "Elmish" ]
-             str ", "
-             a [ Href "https://fulma.github.io/Fulma" ] [ str "Fulma" ]
-             str ", "
-             a [ Href "https://zaid-ajaj.github.io/Fable.Remoting/" ] [ str "Fable.Remoting" ]
-
-           ]
-
-    span [ ]
-        [ str "Version "
-          strong [ ] [ str Version.app ]
-          str " powered by: "
-          components ]
-
-let show = function
-    | { Counter = Some counter } -> string counter.Value
-    | { Counter = None   } -> "Loading..."
-
-let button txt onClick =
+let button isDisabled txt onClick =
     Button.button
         [ Button.IsFullWidth
+          Button.Disabled isDisabled
           Button.Color IsPrimary
           Button.OnClick onClick ]
         [ str txt ]
+
+let unitDropdown dispatch message selected =
+    let construct (caseInfo: UnionCaseInfo) = FSharpValue.MakeUnion(caseInfo, [||]) :?> Length
+    let lengths = FSharpType.GetUnionCases(typeof<Length>) |> Array.map construct |> Array.toList
+
+    let option length = option [ Value length ] [ str (string length) ]
+    let options = lengths |> List.map option
+
+    Column.column [] [
+        select [
+            Value selected
+            OnChange (fun ev -> message ev.target?value |> dispatch ) ]
+            options ]
+
+let inputView model dispatch =
+    seq {
+        yield input [
+            Placeholder "Enter length"
+            OnChange (fun ev -> UpdateInput !!ev.target?value |> dispatch) ]
+        if model.Input.IsNone then yield Text.p [] [ str "Must be a number"]
+    } |> Seq.toList
 
 let view (model : Model) (dispatch : Msg -> unit) =
     div []
         [ Navbar.navbar [ Navbar.Color IsPrimary ]
             [ Navbar.Item.div [ ]
                 [ Heading.h2 [ ]
-                    [ str "SAFE Template" ] ] ]
+                    [ str "Unit Conversion" ] ] ]
 
           Container.container []
               [ Content.content [ Content.Modifiers [ Modifier.TextAlignment (Screen.All, TextAlignment.Centered) ] ]
-                    [ Heading.h3 [] [ str ("Press buttons to manipulate counter: " + show model) ] ]
+                    [ Heading.h3 [] [ str (string model.Result) ] ]
                 Columns.columns []
-                    [ Column.column [] [ button "-" (fun _ -> dispatch Decrement) ]
-                      Column.column [] [ button "+" (fun _ -> dispatch Increment) ] ] ]
-
-          Footer.footer [ ]
-                [ Content.content [ Content.Modifiers [ Modifier.TextAlignment (Screen.All, TextAlignment.Centered) ] ]
-                    [ safeComponents ] ] ]
+                    [
+                      Column.column [] (inputView model dispatch)
+                      unitDropdown dispatch UpdateSource model.Source
+                      unitDropdown dispatch UpdateTarget model.Target
+                      Column.column []
+                        [ button
+                            model.Input.IsNone
+                            "Convert"
+                            (fun _ ->
+                                Convert { Source = model.Source; Target = model.Target; Input = model.Input.Value }
+                                |> dispatch ) ]
+                                ] ] ]
 
 #if DEBUG
 open Elmish.Debug
