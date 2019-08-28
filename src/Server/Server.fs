@@ -25,10 +25,21 @@ let conversionApi : IConverterApi = {
     convert = fun c -> async { return  Length.convert c }
 }
 
+let docs = Docs.createFor<IConverterApi>()
+let converterApiDocs =
+    Remoting.documentation "Conversion API" [
+        docs.route <@ fun api -> api.convert @>
+        |> docs.alias "Convert"
+        |> docs.description "Description"
+        |> docs.example <@ fun api -> api.convert { Source = Kilometer; Target = Meter; Input = 1.0 } @>
+        |> docs.example <@ fun api -> api.convert { Source = Meter; Target = USFoot; Input = 1.0 } @>
+    ]
+
 let webApp =
     Remoting.createApi()
     |> Remoting.withRouteBuilder Route.builder
     |> Remoting.fromValue conversionApi
+    |> Remoting.withDocs "/api/convert/docs" converterApiDocs
     |> Remoting.buildHttpHandler
 
 
